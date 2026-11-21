@@ -21,7 +21,6 @@ const authRoutes = require('./src/routes/auth.routes');
 const publicApiV1Routes = require('./src/routes/publicApiV1.routes');
 const webhookRoutes = require('./src/routes/webhooks.routes');
 const { seedAdminData } = require('./src/seed/seedAdminData');
-const { seedInitialSuperAdmin } = require('./src/seed/seedUsers');
 const logger = require('./src/utils/logger');
 
 const app = express();
@@ -69,7 +68,6 @@ async function bootstrap() {
     await sequelize.authenticate();
     const shouldAlter = process.env.DB_SYNC_ALTER === 'true' || !IS_PROD;
     await sequelize.sync(shouldAlter ? { alter: true } : undefined);
-    await seedInitialSuperAdmin();
     await seedAdminData();
     registerDatabaseRealtimeHooks();
     initSocketServer(server);

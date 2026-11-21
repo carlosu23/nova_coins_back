@@ -164,6 +164,76 @@ router.post('/reseller-applications', applicationLimiter, async (req, res) => {
   }
 });
 
+router.get('/auth/admin-setup-status', async (_req, res) => {
+  try {
+    const adminCount = await User.count({ where: { role: 'Super Administrador' } });
+    return res.json({ needsSetup: adminCount === 0 });
+  } catch (err) {
+    return handleServerError(res, err, 'Error al verificar estado inicial.');
+  }
+});
+
+router.post('/auth/admin-setup', authLimiter, async (req, res) => {
+  const tx = await sequelize.transaction();
+  try {
+    const adminCount = await User.count({
+      where: { role: 'Super Administrador' },
+      transaction: tx
+    });
+    if (adminCount > 0) {
+      await tx.rollback();
+      return res.status(403).json({
+        error: 'El Super Administrador inicial ya fue configurado.'
+      });
+    }
+
+    const fullName = String(req.body?.fullName || '').trim();
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const phoneRaw = String(req.body?.phone || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!fullName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8) {
+      await tx.rollback();
+      return res.status(400).json({
+        error: 'Completa nombre, correo válido y contraseña de al menos 8 caracteres.'
+      });
+    }
+
+    const existing = await User.findOne({ where: { email }, transaction: tx });
+    if (existing) {
+      await tx.rollback();
+      return res.status(409).json({ error: 'Ya existe una cuenta registrada con ese correo.' });
+    }
+
+    const phone = phoneRaw
+      ? phoneRaw.startsWith('+593')
+        ? phoneRaw
+        : `+593 ${phoneRaw}`
+      : '+593 99 000 0000';
+
+    const created = await User.create(
+      {
+        fullName,
+        email,
+        phone,
+        passwordHash: hashPassword(password),
+        role: 'Super Administrador',
+        walletBalanceUsd: 0,
+        active: true
+      },
+      { transaction: tx }
+    );
+
+    await tx.commit();
+    const token = signUserToken(created);
+    const profile = await buildUserPayload(created.id);
+    return res.status(201).json({ token, user: profile });
+  } catch (err) {
+    await tx.rollback().catch(() => {});
+    return handleServerError(res, err, 'Error al configurar Super Administrador.');
+  }
+});
+
 router.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();

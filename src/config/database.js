@@ -2,12 +2,16 @@ const { Client } = require('pg');
 const { Sequelize } = require('sequelize');
 const logger = require('../utils/logger');
 
-const dbHost = process.env.DB_HOST || 'localhost';
-const dbPort = Number(process.env.DB_PORT || 5432);
-const dbName = process.env.DB_NAME || 'novacoins';
-const dbUser = process.env.DB_USER || 'postgres';
-const dbPass = process.env.DB_PASS || '';
-const useSsl = process.env.DB_SSL === 'true';
+const dbUrl = String(process.env.DB_URL || '').trim();
+
+if (!dbUrl) {
+  logger.error('DB_URL no configurada. Define DB_URL en el archivo .env (ej: postgres://usuario:clave@host:5432/nova).');
+  process.exit(1);
+}
+
+const parsedUrl = new URL(dbUrl);
+const sslParam = parsedUrl.searchParams.get('sslmode');
+const useSsl = process.env.DB_SSL === 'true' || sslParam === 'require' || sslParam === 'verify-full';
 
 const dialectOptions = useSsl
   ? {
@@ -19,16 +23,21 @@ const dialectOptions = useSsl
   : undefined;
 
 async function ensureDatabaseExists() {
-  if (process.env.DATABASE_URL) {
+  const isLocalHost = parsedUrl.hostname === 'localhost' || parsedUrl.hostname === '127.0.0.1';
+  if (!isLocalHost) {
     return;
   }
 
+  const dbName = decodeURIComponent(parsedUrl.pathname.replace(/^\/+/, ''));
+  if (!dbName) {
+    return;
+  }
+
+  const adminUrl = new URL(dbUrl);
+  adminUrl.pathname = '/postgres';
+
   const client = new Client({
-    host: dbHost,
-    port: dbPort,
-    user: dbUser,
-    password: dbPass,
-    database: 'postgres',
+    connectionString: adminUrl.toString(),
     ...(useSsl ? { ssl: dialectOptions.ssl } : {})
   });
 
@@ -45,18 +54,10 @@ async function ensureDatabaseExists() {
   }
 }
 
-const sequelize = process.env.DATABASE_URL
-  ? new Sequelize(process.env.DATABASE_URL, {
-      dialect: 'postgres',
-      logging: false,
-      dialectOptions
-    })
-  : new Sequelize(dbName, dbUser, dbPass, {
-      host: dbHost,
-      port: dbPort,
-      dialect: 'postgres',
-      logging: false,
-      dialectOptions
-    });
+const sequelize = new Sequelize(dbUrl, {
+  dialect: 'postgres',
+  logging: false,
+  dialectOptions
+});
 
 module.exports = { sequelize, ensureDatabaseExists };
