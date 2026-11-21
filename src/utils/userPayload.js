@@ -12,6 +12,7 @@ const {
   User,
   WalletAdjustment
 } = require('../models');
+const { extractProductPatterns, normalizeTargetSchema } = require('./supplierNormalizer');
 
 const CHANNEL_COLORS = ['#FACC15', '#A855F7', '#00D2FF', '#22C55E', '#D946EF', '#F97316'];
 const WEEKDAY_LABELS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
@@ -197,12 +198,15 @@ function formatSupplier(s) {
   };
 }
 
-function formatSupplierProduct(sp) {
+function formatSupplierProduct(sp, context = {}) {
+  const targetSchema = normalizeTargetSchema(sp.targetSchemaJson);
+  const patterns = extractProductPatterns(sp, context.games || [], context.margins || []);
   return {
     id: sp.id,
     supplierId: sp.supplierId,
     externalProductId: sp.externalProductId,
     externalSku: sp.externalSku || undefined,
+    externalFamilyId: sp.externalFamilyId || undefined,
     name: sp.name,
     displayName: sp.displayName,
     category: sp.category,
@@ -211,6 +215,8 @@ function formatSupplierProduct(sp) {
     inStock: Boolean(sp.inStock),
     availableStock: sp.availableStock,
     requiresTarget: Boolean(sp.requiresTarget),
+    targetSchema,
+    patterns,
     active: Boolean(sp.active),
     localMarginId: sp.localMarginId || undefined
   };
@@ -237,24 +243,39 @@ function formatHeroBanner(b) {
   };
 }
 
-function formatGameRow(g, includeInactivePackages = false, onlyApiEnabled = false) {
+function formatGameRow(g, includeInactivePackages = false, onlyApiEnabled = false, supplierMetaMap = null) {
   const packages = (g.packages || [])
     .filter((p) => (includeInactivePackages || p.active !== false) && (!onlyApiEnabled || p.apiEnabled === true))
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || Number(a.publicPriceUsd) - Number(b.publicPriceUsd))
-    .map((p) => ({
-      id: p.id,
-      gameId: p.gameId || g.id,
-      label: p.packageLabel,
-      bonus: p.bonus || undefined,
-      imageUrl: p.imageUrl || undefined,
-      baseCostUsd: includeInactivePackages ? Number(p.baseCostUsd) : undefined,
-      publicPriceUsd: Number(p.publicPriceUsd),
-      resellerPriceUsd: Number(p.resellerPriceUsd),
-      popular: Boolean(p.popular),
-      active: Boolean(p.active),
-      apiEnabled: Boolean(p.apiEnabled),
-      sortOrder: p.sortOrder ?? 0
-    }));
+    .map((p) => {
+      const supplierMeta = supplierMetaMap ? supplierMetaMap.get(p.id) : null;
+      return {
+        id: p.id,
+        gameId: p.gameId || g.id,
+        label: p.packageLabel,
+        bonus: p.bonus || undefined,
+        imageUrl: p.imageUrl || undefined,
+        baseCostUsd: includeInactivePackages ? Number(p.baseCostUsd) : undefined,
+        publicPriceUsd: Number(p.publicPriceUsd),
+        resellerPriceUsd: Number(p.resellerPriceUsd),
+        popular: Boolean(p.popular),
+        active: Boolean(p.active),
+        apiEnabled: Boolean(p.apiEnabled),
+        sortOrder: p.sortOrder ?? 0,
+        ...(supplierMeta
+          ? {
+              inStock: supplierMeta.inStock,
+              availableStock: supplierMeta.availableStock,
+              requiresTarget: supplierMeta.requiresTarget,
+              targetSchema: supplierMeta.targetSchema,
+              supplierLinked: true
+            }
+          : {
+              inStock: true,
+              supplierLinked: false
+            })
+      };
+    });
 
   return {
     ...formatAdminGame(g),
@@ -364,25 +385,64 @@ async function buildAdminAnalytics() {
   return computeAnalytics(allOrders, margins);
 }
 
-async function buildPublicCatalog() {
-  const games = await Game.findAll({
+async function buildSupplierMetaMap() {
+  const rows = await SupplierProduct.findAll({
     where: { active: true },
-    include: [{ model: ProductMargin, as: 'packages', required: false }],
-    order: [['sortOrder', 'ASC'], ['title', 'ASC']]
+    include: [{ model: Supplier, where: { active: true }, required: true }],
+    order: [[Supplier, 'priority', 'ASC']]
   });
+  const map = new Map();
+  for (const sp of rows) {
+    if (!sp.localMarginId) {
+      continue;
+    }
+    const existing = map.get(sp.localMarginId);
+    const schema = normalizeTargetSchema(sp.targetSchemaJson);
+    if (!existing) {
+      map.set(sp.localMarginId, {
+        inStock: Boolean(sp.inStock),
+        availableStock: sp.availableStock ?? null,
+        requiresTarget: Boolean(sp.requiresTarget),
+        targetSchema: schema
+      });
+    } else {
+      existing.inStock = existing.inStock || Boolean(sp.inStock);
+      if (existing.targetSchema.length === 0 && schema.length > 0) {
+        existing.targetSchema = schema;
+      }
+      if (existing.availableStock === null && sp.availableStock !== null) {
+        existing.availableStock = sp.availableStock;
+      }
+    }
+  }
+  return map;
+}
+
+async function buildPublicCatalog() {
+  const [games, supplierMetaMap] = await Promise.all([
+    Game.findAll({
+      where: { active: true },
+      include: [{ model: ProductMargin, as: 'packages', required: false }],
+      order: [['sortOrder', 'ASC'], ['title', 'ASC']]
+    }),
+    buildSupplierMetaMap()
+  ]);
   return games
-    .map((g) => formatGameRow(g, false, false))
+    .map((g) => formatGameRow(g, false, false, supplierMetaMap))
     .filter((g) => g.packages.length > 0);
 }
 
 async function buildPublicApiCatalog() {
-  const games = await Game.findAll({
-    where: { active: true },
-    include: [{ model: ProductMargin, as: 'packages', required: false }],
-    order: [['sortOrder', 'ASC'], ['title', 'ASC']]
-  });
+  const [games, supplierMetaMap] = await Promise.all([
+    Game.findAll({
+      where: { active: true },
+      include: [{ model: ProductMargin, as: 'packages', required: false }],
+      order: [['sortOrder', 'ASC'], ['title', 'ASC']]
+    }),
+    buildSupplierMetaMap()
+  ]);
   return games
-    .map((g) => formatGameRow(g, false, true))
+    .map((g) => formatGameRow(g, false, true, supplierMetaMap))
     .filter((g) => g.packages.length > 0);
 }
 
@@ -425,17 +485,29 @@ async function buildUserPayload(userId) {
       accountName: s.accountName || undefined,
       whatsapp: s.whatsapp || undefined
     })),
-    recentOrders: (user.orders || []).map((o) => ({
-      id: o.orderCode,
-      gameTitle: o.gameTitle,
-      packageLabel: o.packageLabel,
-      playerId: o.playerId,
-      amountUsd: Number(o.amountUsd),
-      paymentMethod: o.paymentMethod,
-      status: o.status,
-      createdAt: o.createdAt ? new Date(o.createdAt).toISOString() : undefined,
-      dateLabel: formatTimeLabel(o.createdAt)
-    }))
+    recentOrders: (user.orders || []).map((o) => {
+      let codes = undefined;
+      if (o.deliveredCodes) {
+        try {
+          codes = JSON.parse(o.deliveredCodes);
+        } catch {
+          codes = undefined;
+        }
+      }
+      return {
+        id: o.orderCode,
+        gameTitle: o.gameTitle,
+        packageLabel: o.packageLabel,
+        playerId: o.playerId,
+        amountUsd: Number(o.amountUsd),
+        paymentMethod: o.paymentMethod,
+        status: o.status,
+        fulfillmentStatus: o.fulfillmentStatus || 'none',
+        codes,
+        createdAt: o.createdAt ? new Date(o.createdAt).toISOString() : undefined,
+        dateLabel: formatTimeLabel(o.createdAt)
+      };
+    })
   };
 }
 
@@ -509,7 +581,7 @@ async function buildAdminSnapshot() {
     resellerApplications: resellerApplications.map(formatResellerApplication),
     walletAdjustments: walletAdjustments.map(formatWalletAdjustment),
     suppliers: suppliers.map(formatSupplier),
-    supplierProducts: supplierProducts.map(formatSupplierProduct),
+    supplierProducts: supplierProducts.map((sp) => formatSupplierProduct(sp, { games, margins })),
     heroBanners: heroBanners.map(formatHeroBanner)
   };
 }

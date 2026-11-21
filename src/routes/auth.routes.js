@@ -16,6 +16,7 @@ const {
 const { fulfillOrderWithPool, validatePlayerWithPool } = require('../providers/supplierPool');
 const logger = require('../utils/logger');
 const { hashPassword, verifyPassword } = require('../utils/password');
+const { extractTargetFieldsFromPayload } = require('../utils/supplierNormalizer');
 const { buildPublicCatalog, buildPublicHeroBanners, buildUserPayload, formatPublicChannel } = require('../utils/userPayload');
 
 const router = express.Router();
@@ -74,14 +75,22 @@ router.get('/catalog', async (_req, res) => {
 router.post('/catalog/validate-player', validatePlayerLimiter, async (req, res) => {
   try {
     const packageId = String(req.body?.packageId || '').trim();
-    const playerId = String(req.body?.playerId || '').trim();
-    const zoneId = req.body?.zoneId ? String(req.body.zoneId).trim() : undefined;
+    const extracted = extractTargetFieldsFromPayload({
+      targetPayload: req.body?.targetPayload,
+      playerId: req.body?.playerId,
+      zoneId: req.body?.zoneId
+    });
 
-    if (!packageId || !playerId) {
+    if (!packageId || !extracted.playerId) {
       return res.status(400).json({ error: 'Paquete e ID de jugador son obligatorios.' });
     }
 
-    const result = await validatePlayerWithPool({ packageId, playerId, zoneId });
+    const result = await validatePlayerWithPool({
+      packageId,
+      playerId: extracted.playerId,
+      zoneId: extracted.zoneId || undefined,
+      targetPayload: extracted.targetPayload
+    });
     return res.json(result);
   } catch (err) {
     return handleServerError(res, err, 'Error al validar cuenta de jugador.');
@@ -445,8 +454,13 @@ router.post('/orders', requireAuth, async (req, res) => {
     const packageId = req.body?.packageId ? String(req.body.packageId).trim() : null;
     const gameTitle = String(req.body?.gameTitle || '').trim();
     const packageLabel = String(req.body?.packageLabel || '').trim();
-    const playerId = String(req.body?.playerId || '').trim();
-    const zoneId = req.body?.zoneId ? String(req.body.zoneId).trim() : null;
+    const extracted = extractTargetFieldsFromPayload({
+      targetPayload: req.body?.targetPayload,
+      playerId: req.body?.playerId,
+      zoneId: req.body?.zoneId
+    });
+    const playerId = extracted.playerId;
+    const zoneId = extracted.zoneId;
     const accountName = req.body?.accountName
       ? String(req.body.accountName).trim()
       : `Cuenta ${playerId.slice(0, 8)}`;
@@ -514,6 +528,7 @@ router.post('/orders', requireAuth, async (req, res) => {
         paymentMethod: usedWallet ? 'Billetera Nova USD' : paymentMethod,
         referenceCode: referenceCodeRaw || orderCode,
         proofImage: usedWallet ? null : proofImage,
+        targetPayloadJson: extracted.targetPayload ? JSON.stringify(extracted.targetPayload) : null,
         status: orderStatus
       },
       { transaction: tx }

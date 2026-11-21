@@ -88,7 +88,7 @@ async function syncSupplierCatalog(supplierId) {
   return { count: normalizedItems.length, syncedAt: now.toISOString() };
 }
 
-function buildTargetPayloadForProduct(supplierProduct, rawPlayerId, rawZoneId) {
+function buildTargetPayloadForProduct(supplierProduct, rawPlayerId, rawZoneId, rawTargetPayload) {
   if (!supplierProduct.requiresTarget) {
     return undefined;
   }
@@ -98,6 +98,31 @@ function buildTargetPayloadForProduct(supplierProduct, rawPlayerId, rawZoneId) {
     schema = JSON.parse(supplierProduct.targetSchemaJson || '[]');
   } catch {
     schema = [];
+  }
+
+  if (rawTargetPayload && typeof rawTargetPayload === 'object' && !Array.isArray(rawTargetPayload)) {
+    const cleanMap = {};
+    for (const [k, v] of Object.entries(rawTargetPayload)) {
+      const key = String(k || '').trim();
+      const val = String(v ?? '').trim();
+      if (key && val) {
+        cleanMap[key] = val;
+      }
+    }
+    if (Object.keys(cleanMap).length > 0) {
+      if (Array.isArray(schema) && schema.length > 0) {
+        const mapped = {};
+        for (const field of schema) {
+          if (field.key && cleanMap[field.key]) {
+            mapped[field.key] = cleanMap[field.key];
+          }
+        }
+        if (Object.keys(mapped).length > 0) {
+          return mapped;
+        }
+      }
+      return cleanMap;
+    }
   }
 
   const cleanPlayer = String(rawPlayerId || '').trim();
@@ -126,7 +151,7 @@ function buildTargetPayloadForProduct(supplierProduct, rawPlayerId, rawZoneId) {
     : { player_id: cleanPlayer };
 }
 
-async function validatePlayerWithPool({ packageId, playerId, zoneId }) {
+async function validatePlayerWithPool({ packageId, playerId, zoneId, targetPayload }) {
   const candidates = await SupplierProduct.findAll({
     where: { localMarginId: packageId, active: true, inStock: true },
     include: [{ model: Supplier, where: { active: true } }],
@@ -143,10 +168,10 @@ async function validatePlayerWithPool({ packageId, playerId, zoneId }) {
   }
 
   const adapter = instantiateAdapter(chosen.Supplier);
-  const targetPayload = buildTargetPayloadForProduct(chosen, playerId, zoneId);
+  const builtTarget = buildTargetPayloadForProduct(chosen, playerId, zoneId, targetPayload);
   return adapter.validatePlayer({
     externalProductId: chosen.externalProductId,
-    targetPayload
+    targetPayload: builtTarget
   });
 }
 
@@ -252,11 +277,25 @@ async function fulfillOrderWithPool(orderId, { playerId, zoneId } = {}) {
     }
   }
 
+  let storedTargetPayload = null;
+  if (order.targetPayloadJson) {
+    try {
+      storedTargetPayload = JSON.parse(order.targetPayloadJson);
+    } catch {
+      storedTargetPayload = null;
+    }
+  }
+
   let lastError = null;
   for (const candidate of candidates) {
     const adapter = instantiateAdapter(candidate.Supplier);
     const idempotencyKey = `nc-${order.id}-${candidate.supplierId}`.slice(0, 255);
-    const targetPayload = buildTargetPayloadForProduct(candidate, resolvedPlayer, resolvedZone);
+    const targetPayload = buildTargetPayloadForProduct(
+      candidate,
+      resolvedPlayer,
+      resolvedZone,
+      storedTargetPayload
+    );
 
     try {
       await order.update({

@@ -18,12 +18,14 @@ const {
 } = require('../models');
 const {
   fulfillOrderWithPool,
+  getAdapterById,
   refreshSupplierBalance,
   syncOrderStatusFromSupplier,
   syncSupplierCatalog
 } = require('../providers/supplierPool');
 const logger = require('../utils/logger');
 const { hashPassword } = require('../utils/password');
+const { computeSuggestedPrices, extractProductPatterns } = require('../utils/supplierNormalizer');
 const { buildAdminSnapshot } = require('../utils/userPayload');
 
 const router = express.Router();
@@ -773,6 +775,58 @@ router.post('/suppliers/:id/sync', async (req, res) => {
   }
 });
 
+router.get('/suppliers/:id/health', async (req, res) => {
+  try {
+    const { adapter } = await getAdapterById(req.params.id);
+    const result = await adapter.healthCheck();
+    return res.json(result);
+  } catch (err) {
+    return res.status(err.status || 500).json({
+      error: err.message || 'No se pudo verificar la conexión con el proveedor.'
+    });
+  }
+});
+
+router.post('/suppliers/:id/auto-link', async (req, res) => {
+  try {
+    const [supplier, products, games, margins] = await Promise.all([
+      Supplier.findByPk(req.params.id),
+      SupplierProduct.findAll({ where: { supplierId: req.params.id, active: true } }),
+      Game.findAll(),
+      ProductMargin.findAll()
+    ]);
+
+    if (!supplier) {
+      return res.status(404).json({ error: 'Proveedor no encontrado.' });
+    }
+
+    const usedMarginIds = new Set(
+      products.filter((p) => p.localMarginId).map((p) => p.localMarginId)
+    );
+
+    let linkedCount = 0;
+    for (const sp of products) {
+      if (sp.localMarginId) {
+        continue;
+      }
+      const patterns = extractProductPatterns(sp, games, margins);
+      if (
+        patterns.matchConfidence === 'high' &&
+        patterns.suggestedMarginId &&
+        !usedMarginIds.has(patterns.suggestedMarginId)
+      ) {
+        await sp.update({ localMarginId: patterns.suggestedMarginId });
+        usedMarginIds.add(patterns.suggestedMarginId);
+        linkedCount += 1;
+      }
+    }
+
+    return res.json({ linkedCount });
+  } catch (err) {
+    return handleServerError(res, err, 'Error en auto-vinculación por patrones.');
+  }
+});
+
 router.patch('/supplier-products/:id/link', async (req, res) => {
   try {
     const sp = await SupplierProduct.findByPk(req.params.id);
@@ -790,6 +844,82 @@ router.patch('/supplier-products/:id/link', async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     return handleServerError(res, err, 'Error al vincular producto.');
+  }
+});
+
+router.post('/supplier-products/:id/import-margin', async (req, res) => {
+  try {
+    const sp = await SupplierProduct.findByPk(req.params.id);
+    if (!sp) {
+      return res.status(404).json({ error: 'Producto de proveedor no encontrado.' });
+    }
+
+    const [games, margins] = await Promise.all([Game.findAll(), ProductMargin.findAll()]);
+    const patterns = extractProductPatterns(sp, games, margins);
+
+    let targetGame = req.body?.gameId
+      ? games.find((g) => g.id === String(req.body.gameId).trim())
+      : patterns.detectedGameId
+        ? games.find((g) => g.id === patterns.detectedGameId)
+        : null;
+
+    if (!targetGame) {
+      const fallbackTitle = patterns.detectedGameTitle || sp.displayName.split(/\s+/)[0] || 'Nuevo Juego';
+      const slug = fallbackTitle
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || `game-${Date.now()}`;
+
+      targetGame =
+        games.find((g) => g.slug === slug) ||
+        (await Game.create({
+          id: slug,
+          slug,
+          title: fallbackTitle,
+          publisher: 'Proveedor API',
+          currencyName: sp.category === 'giftcard' ? 'Gift Card' : 'Créditos',
+          category: sp.category === 'giftcard' ? 'giftcard' : 'topup',
+          categoryLabel: sp.category === 'giftcard' ? 'Gift Card' : 'Top-Up por ID',
+          badgeText: 'API Directo',
+          deliverySpeed: 'Instantáneo',
+          requiresZoneId: false,
+          inputLabel: sp.category === 'giftcard' ? 'Correo para recibir PIN' : 'ID de Jugador',
+          inputPlaceholder: sp.category === 'giftcard' ? 'tu-correo@ejemplo.com' : 'Ingresa tu ID',
+          accentGradient: '#000000',
+          accentColor: '#00D2FF',
+          shortCode: fallbackTitle.slice(0, 3).toUpperCase(),
+          isHot: false,
+          active: true,
+          sortOrder: games.length + 1
+        }));
+    }
+
+    const baseCost = Number.parseFloat(String(sp.costPrice4 || '0'));
+    const prices = computeSuggestedPrices(sp.costPrice4);
+    const marginId = `${targetGame.id}-${Date.now().toString().slice(-5)}`;
+
+    const createdMargin = await ProductMargin.create({
+      id: marginId,
+      gameId: targetGame.id,
+      gameTitle: targetGame.title,
+      packageLabel: String(req.body?.packageLabel || patterns.normalizedPackageLabel || sp.displayName).trim(),
+      baseCostUsd: Number.isFinite(baseCost) ? Number(baseCost.toFixed(4)) : 0,
+      publicPriceUsd: prices.suggestedPublicPriceUsd,
+      resellerPriceUsd: prices.suggestedResellerPriceUsd,
+      popular: false,
+      active: true,
+      apiEnabled: true,
+      preferredSupplierId: sp.supplierId,
+      externalProductId: sp.externalProductId
+    });
+
+    await sp.update({ localMarginId: createdMargin.id });
+
+    return res.status(201).json({ marginId: createdMargin.id, gameId: targetGame.id });
+  } catch (err) {
+    return handleServerError(res, err, 'Error al importar producto a la tienda.');
   }
 });
 

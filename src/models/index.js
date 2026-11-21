@@ -266,6 +266,10 @@ const Order = sequelize.define('Order', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  targetPayloadJson: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
   lastWebhookSequence: {
     type: DataTypes.INTEGER,
     allowNull: true
