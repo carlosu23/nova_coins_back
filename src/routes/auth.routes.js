@@ -16,6 +16,7 @@ const {
 const { fulfillOrderWithPool, validatePlayerWithPool } = require('../providers/supplierPool');
 const logger = require('../utils/logger');
 const { hashPassword, verifyPassword } = require('../utils/password');
+const { generateOrderCode } = require('../utils/orderCode');
 const { extractTargetFieldsFromPayload } = require('../utils/supplierNormalizer');
 const { buildPublicCatalog, buildPublicHeroBanners, buildUserPayload, formatPublicChannel } = require('../utils/userPayload');
 
@@ -151,7 +152,7 @@ router.post('/reseller-applications', applicationLimiter, async (req, res) => {
     }
 
     const phone = phoneRaw.startsWith('+593') ? phoneRaw : `+593 ${phoneRaw}`;
-    const referenceCode = `RES-${Date.now().toString().slice(-6)}`;
+    const referenceCode = generateOrderCode('RES');
 
     const created = await ResellerApplication.create({
       referenceCode,
@@ -378,7 +379,7 @@ router.post('/wallet/topup', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Usuario no encontrado.' });
     }
 
-    const orderCode = `FND-${Date.now().toString().slice(-6)}`;
+    const orderCode = generateOrderCode('FND');
     const createdOrder = await Order.create({
       userId: user.id,
       orderCode,
@@ -513,7 +514,7 @@ router.post('/orders', requireAuth, async (req, res) => {
     }
 
     const displayPlayerId = zoneId && !playerId.includes(zoneId) ? `${playerId} (${zoneId})` : playerId;
-    const orderCode = `ORD-${Date.now().toString().slice(-6)}`;
+    const orderCode = generateOrderCode('ORD');
     const orderStatus = usedWallet ? 'Completado' : 'Pendiente';
 
     const createdOrder = await Order.create(

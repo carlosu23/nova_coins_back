@@ -300,7 +300,9 @@ async function fulfillOrderWithPool(orderId, { playerId, zoneId } = {}) {
     try {
       await order.update({
         supplierId: candidate.supplierId,
-        idempotencyKey,
+        ...(order.idempotencyKey && order.idempotencyKey.startsWith('uapi-')
+          ? {}
+          : { idempotencyKey }),
         fulfillmentStatus: 'processing',
         failureCode: null,
         failureMessage: null

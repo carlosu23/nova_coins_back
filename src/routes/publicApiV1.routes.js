@@ -5,6 +5,8 @@ const { createRateLimiter } = require('../middleware/rateLimit');
 const { Game, Order, ProductMargin, User } = require('../models');
 const { fulfillOrderWithPool, validatePlayerWithPool } = require('../providers/supplierPool');
 const logger = require('../utils/logger');
+const { generateOrderCode } = require('../utils/orderCode');
+const { extractTargetFieldsFromPayload } = require('../utils/supplierNormalizer');
 const { buildPublicApiCatalog } = require('../utils/userPayload');
 
 const router = express.Router();
@@ -81,8 +83,13 @@ router.get('/balance', requireScope('balance:read'), async (req, res) => {
 router.post('/player/validate', requireScope('catalog:read'), async (req, res) => {
   try {
     const packageId = String(req.body?.packageId || '').trim();
-    const playerId = String(req.body?.playerId || '').trim();
-    const zoneId = req.body?.zoneId ? String(req.body.zoneId).trim() : undefined;
+    const extracted = extractTargetFieldsFromPayload({
+      targetPayload: req.body?.targetPayload,
+      playerId: req.body?.playerId,
+      zoneId: req.body?.zoneId
+    });
+    const playerId = extracted.playerId;
+    const zoneId = extracted.zoneId || undefined;
 
     if (!packageId || !playerId) {
       return res.status(400).json({
@@ -108,7 +115,12 @@ router.post('/player/validate', requireScope('catalog:read'), async (req, res) =
       });
     }
 
-    const result = await validatePlayerWithPool({ packageId, playerId, zoneId });
+    const result = await validatePlayerWithPool({
+      packageId,
+      playerId,
+      zoneId,
+      targetPayload: extracted.targetPayload
+    });
     return res.json(result);
   } catch (err) {
     logger.error(`[API v1] Error en POST /player/validate: ${err.message}`);
@@ -122,8 +134,13 @@ router.post('/orders', requireScope('orders:write'), async (req, res) => {
 
   try {
     const packageId = String(req.body?.packageId || '').trim();
-    const playerId = String(req.body?.playerId || '').trim();
-    const zoneId = req.body?.zoneId ? String(req.body.zoneId).trim() : null;
+    const extracted = extractTargetFieldsFromPayload({
+      targetPayload: req.body?.targetPayload,
+      playerId: req.body?.playerId,
+      zoneId: req.body?.zoneId
+    });
+    const playerId = extracted.playerId;
+    const zoneId = extracted.zoneId;
     const idempHeader = String(req.headers['idempotency-key'] || '').trim();
 
     if (!packageId || !playerId) {
@@ -210,7 +227,7 @@ router.post('/orders', requireScope('orders:write'), async (req, res) => {
 
     const displayPlayerId = zoneId && !playerId.includes(zoneId) ? `${playerId} (${zoneId})` : playerId;
     const prefix = isSandbox ? 'SBX' : 'API';
-    const orderCode = `${prefix}-${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 89)}`;
+    const orderCode = generateOrderCode(prefix);
 
     const isGiftCard = productMargin.Game?.category === 'giftcard';
     const sandboxCodes =
@@ -230,6 +247,7 @@ router.post('/orders', requireScope('orders:write'), async (req, res) => {
         paymentMethod: isSandbox ? 'Sandbox Wallet USD' : 'Billetera Nova USD',
         referenceCode: orderCode,
         idempotencyKey: idempHeader ? `uapi-${req.apiKeyAuth.environment}-${idempHeader}` : null,
+        targetPayloadJson: extracted.targetPayload ? JSON.stringify(extracted.targetPayload) : null,
         isSandbox,
         fulfillmentStatus: isSandbox ? 'completed' : 'none',
         deliveredCodes: sandboxCodes,
