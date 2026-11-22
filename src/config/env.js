@@ -23,10 +23,19 @@ if (!IS_PROD && (!rawSecret || INSECURE_DEFAULTS.has(rawSecret))) {
   logger.warn('Usando JWT_SECRET de desarrollo. Configura un valor seguro antes de pasar a producción.');
 }
 
-const allowedOrigins = String(process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+function parseOriginList(raw) {
+  return String(raw || '')
+    .split(',')
+    .map((o) => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
+const allowedOrigins = Array.from(
+  new Set([
+    ...parseOriginList(process.env.FRONT_URL),
+    ...parseOriginList(process.env.ADMIN_URL)
+  ])
+);
 
 function isOriginAllowed(origin) {
   if (!origin) {
@@ -38,7 +47,8 @@ function isOriginAllowed(origin) {
   if (allowedOrigins.length === 0) {
     return !IS_PROD;
   }
-  return allowedOrigins.includes(origin);
+  const normalized = String(origin).trim().replace(/\/+$/, '');
+  return allowedOrigins.includes(normalized);
 }
 
 module.exports = {
