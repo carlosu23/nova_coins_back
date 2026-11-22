@@ -24,16 +24,33 @@ if (!IS_PROD && (!rawSecret || INSECURE_DEFAULTS.has(rawSecret))) {
 }
 
 function parseOriginList(raw) {
-  return String(raw || '')
+  const list = String(raw || '')
     .split(',')
     .map((o) => o.trim().replace(/\/+$/, ''))
     .filter(Boolean);
+
+  const expanded = [];
+  for (const origin of list) {
+    expanded.push(origin);
+    try {
+      const url = new URL(origin);
+      if (url.hostname.startsWith('www.')) {
+        expanded.push(`${url.protocol}//${url.hostname.slice(4)}${url.port ? `:${url.port}` : ''}`);
+      } else if (!url.hostname.includes('localhost') && !/^\d+\.\d+\.\d+\.\d+$/.test(url.hostname)) {
+        expanded.push(`${url.protocol}//www.${url.hostname}${url.port ? `:${url.port}` : ''}`);
+      }
+    } catch {
+      expanded.push(origin);
+    }
+  }
+  return expanded;
 }
 
 const allowedOrigins = Array.from(
   new Set([
     ...parseOriginList(process.env.FRONT_URL),
-    ...parseOriginList(process.env.ADMIN_URL)
+    ...parseOriginList(process.env.ADMIN_URL),
+    ...parseOriginList(process.env.CORS_ORIGINS)
   ])
 );
 

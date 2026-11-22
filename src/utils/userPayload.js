@@ -514,6 +514,7 @@ async function buildUserPayload(userId) {
 async function buildAdminSnapshot() {
   const [
     configRow,
+    whatsappRow,
     recentOrders,
     allOrders,
     users,
@@ -527,6 +528,7 @@ async function buildAdminSnapshot() {
     heroBanners
   ] = await Promise.all([
     SystemConfig.findByPk('paymentMode'),
+    SystemConfig.findByPk('whatsappNumber'),
     Order.findAll({
       where: { isSandbox: false },
       include: [{ model: User, attributes: ['fullName', 'role', 'email'] }],
@@ -571,6 +573,7 @@ async function buildAdminSnapshot() {
 
   return {
     paymentMode: configRow?.value === 'auto' ? 'auto' : 'manual',
+    whatsappNumber: whatsappRow?.value || '',
     totalApprovedSalesUsd,
     analytics,
     payments: recentOrders.map(formatAdminPayment),

@@ -226,14 +226,19 @@ function registerDatabaseRealtimeHooks() {
   });
 
   SystemConfig.addHook('afterSave', (config, options) => {
-    if (config.key !== 'paymentMode') {
-      return;
-    }
-    runAfterCommit(options, () => {
-      emitToSuperAdmin('admin:paymentMode:updated', {
-        paymentMode: config.value === 'auto' ? 'auto' : 'manual'
+    if (config.key === 'paymentMode') {
+      runAfterCommit(options, () => {
+        emitToSuperAdmin('admin:paymentMode:updated', {
+          paymentMode: config.value === 'auto' ? 'auto' : 'manual'
+        });
       });
-    });
+    } else if (config.key === 'whatsappNumber') {
+      runAfterCommit(options, () => {
+        const val = String(config.value || '').replace(/\D/g, '');
+        emitToSuperAdmin('admin:whatsapp:updated', { whatsappNumber: val });
+        emitToAll('catalog:whatsapp', { whatsappNumber: val });
+      });
+    }
   });
 
   SavedId.addHook('afterSave', (saved, options) => {

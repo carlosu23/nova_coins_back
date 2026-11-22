@@ -125,6 +125,16 @@ router.patch('/payment-mode', async (req, res) => {
   }
 });
 
+router.patch('/whatsapp', async (req, res) => {
+  try {
+    const cleaned = String(req.body?.whatsappNumber || '').replace(/\D/g, '');
+    await SystemConfig.upsert({ key: 'whatsappNumber', value: cleaned });
+    return res.json({ whatsappNumber: cleaned });
+  } catch (err) {
+    return handleServerError(res, err, 'Error al actualizar número de WhatsApp.');
+  }
+});
+
 router.patch('/payments/:id/decision', async (req, res) => {
   const tx = await sequelize.transaction();
   try {

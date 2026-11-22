@@ -50,17 +50,21 @@ const appCors = cors({
 });
 
 app.use('/api/webhooks', webhookRoutes);
+app.use('/webhooks', webhookRoutes);
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan(IS_PROD ? 'combined' : 'dev'));
 
 app.use('/api/v1', publicApiV1Routes);
-app.use('/api/health', appCors);
-app.get('/api/health', (_req, res) => {
+app.use('/v1', publicApiV1Routes);
+
+app.use(appCors);
+
+app.get(['/api/health', '/health'], (_req, res) => {
   res.json({ ok: true, service: 'novacoins-api' });
 });
 
-app.use('/api', appCors, authRoutes);
-app.use('/api/admin', appCors, adminRoutes);
+app.use(['/api/admin', '/admin'], adminRoutes);
+app.use(['/api', '/'], authRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada.' });

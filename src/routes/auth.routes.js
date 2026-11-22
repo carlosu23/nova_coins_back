@@ -11,6 +11,7 @@ const {
   ProductMargin,
   ResellerApplication,
   SavedId,
+  SystemConfig,
   User
 } = require('../models');
 const { fulfillOrderWithPool, validatePlayerWithPool } = require('../providers/supplierPool');
@@ -66,8 +67,11 @@ function sanitizeProofImage(raw) {
 
 router.get('/catalog', async (_req, res) => {
   try {
-    const games = await buildPublicCatalog();
-    return res.json({ games });
+    const [games, whatsappRow] = await Promise.all([
+      buildPublicCatalog(),
+      SystemConfig.findByPk('whatsappNumber')
+    ]);
+    return res.json({ games, whatsappNumber: whatsappRow?.value || '' });
   } catch (err) {
     return handleServerError(res, err, 'Error al obtener catálogo.');
   }
